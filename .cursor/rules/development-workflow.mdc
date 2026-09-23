@@ -1,0 +1,6 @@
+---
+description: Shared repository development workflow routing
+alwaysApply: true
+---
+
+Follow the repository instructions in `AGENTS.md`. For epic intake, approval gates, work routing, and completion, read `docs/engineering/development-workflow.md` before acting.
