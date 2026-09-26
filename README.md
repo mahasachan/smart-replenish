@@ -1,79 +1,184 @@
-# GitHub-native AI development workflow
+# Smart Replenishment
 
-A reusable repository template for production software teams using Cursor, Claude Code, Codex, OpenCode, or a mix of them. GitHub Issues are the durable source of truth; a small repository policy routes requirements through Matt Pocock Skills and engineering execution through Superpowers.
+A Go/PostgreSQL modular monolith that turns purchase history into replenishment
+suggestions. Application code owns every side effect:
 
-## Start a new project
+**Facts → Prediction → Decision → Policy → Action → Feedback**
 
-1. In the source repository's GitHub settings, enable **Template repository**. Create a new repository from it and clone that repository.
-2. Run `scripts/setup-ai.sh` for a read-only project readiness check. Use `--agent cursor`, `--agent claude`, `--agent codex`, or `--agent opencode` to select an agent explicitly; use multiple `--agent` flags for a team using more than one.
-3. Run `scripts/setup-ai.sh --install --agent <agent>` to invoke documented Matt Pocock Skills installers where supported and print agent-native Superpowers installation steps. Select `setup-matt-pocock-skills` in the installer. Verify plugins inside the agent; the script deliberately does not claim it can inspect every vendor's plugin state.
-4. If GitHub labels are missing, run `scripts/setup-ai.sh --setup-labels` to create missing defaults. This is explicit and additive; existing labels are never renamed or overwritten. For custom existing-project labels, edit `docs/agents/triage-labels.md` and issue template frontmatter to match.
-5. Replace the starter architecture overview with verified project facts. Add the project's real setup, build, test, lint, typecheck, migration, deployment, and recovery commands to its documentation and CI.
-6. Enable Issues and Actions, configure branch protection and required checks, and confirm the PR template/issue linking convention with maintainers.
+The rule engine controls production. Jev can evaluate the same compact contexts in
+shadow mode; its decisions are logged and never executed. No automatic purchases,
+cart additions, outbound notifications, ML, Redis, or background infrastructure.
 
-The template provides engineering defaults, not an application architecture or a guarantee of production readiness. Each project must document its real runtime, data, security, operational, and release constraints.
+## Run locally
 
-## Adopt in an existing repository
+Requires Go 1.26+ and Docker with Compose. Install Node.js 20+ and npm to run the frontend.
+Defaults bind PostgreSQL and HTTP to loopback.
 
-Do not replace existing instructions or architecture documentation wholesale. Review `AGENTS.md`, `CLAUDE.md`, `.claude/`, Cursor/Codex configuration, GitHub templates, CI, and ADRs; preserve project-specific rules and route them to the shared instructions without duplicating the workflow. If the repository already has a root `CLAUDE.md`, keep it as the Claude entry point and merge or import the shared policy there; do not add `.claude/CLAUDE.md` as a competing second entry point. Keep one canonical workflow document. Preserve existing issue labels and map Matt's triage roles in `docs/agents/triage-labels.md`. Keep project-specific ADRs and adapt the overview to observed architecture. Add files selectively, then run `scripts/setup-ai.sh` and the repository's real verification checks. `scripts/check-template.sh` is only for this template source, not for validating an adopted project.
+Use `http://127.0.0.1:8080` for this service. On machines where another local API owns
+IPv6 `localhost:8080`, `http://localhost:8080` can reach that other process and return its
+404 instead. This project intentionally binds IPv4 loopback by default; set `HTTP_ADDR` to
+another free address or port if needed.
 
-## Workflow at a glance
+```sh
+cp backend/.env.example backend/.env
+# Optional: edit backend/.env. Root run and seed commands load it automatically.
 
-- **Epic from chat:** ask the agent to turn your epic card into work → it checks for an existing issue and creates or reuses one GitHub parent issue → it returns the URL and waits for your approval comment. No child tickets or implementation before approval. A `ready-for-agent` label is not approval.
-- **Substantial feature:** Matt discovery → approved GitHub issue/spec → optional vertical-slice child issues → fresh context per ticket → Superpowers worktree/plan/TDD/verification → Matt issue-based review → Superpowers branch completion → linked PR.
-- **Clear small task:** existing issue → implement/test/verify/review → linked PR. Skip unnecessary discovery and decomposition.
-- **Bug:** triage and root-cause diagnosis → reproduce → regression test → fix → verification → review → linked PR.
-
-See [`docs/engineering/development-workflow.md`](docs/engineering/development-workflow.md) for the routing contract and responsibility boundaries. Agent entry points are intentionally thin and all point to one shared policy.
-
-## Agent instruction loading
-
-| Agent | Active project instructions in this template |
-|---|---|
-| Claude Code | `.claude/CLAUDE.md` imports the root `AGENTS.md` |
-| Cursor | Root `AGENTS.md` plus `.cursor/rules/development-workflow.mdc` |
-| Codex | Root `AGENTS.md`; `.codex/README.md` is setup documentation only |
-| OpenCode | Root `AGENTS.md` |
-
-`.agents/README.md` explains that `.agents/` may hold installed skills but is not a universal rules directory. Do not create separate copies of the full workflow in these agent-specific locations. `scripts/setup-ai.sh` detects CLI commands as candidates; the committed template directories do not count as proof that an agent is installed.
-
-## Repository map
-
-- `.github/ISSUE_TEMPLATE/` and `.github/pull_request_template.md`: issue and change evidence shapes.
-- `.claude/`, `.cursor/`, `.codex/`, and `.agents/`: thin agent entry point or setup documentation; see the loading table above.
-- `docs/engineering/`: project design defaults and workflow.
-- `docs/architecture/`: verified project architecture, filled in by maintainers.
-- `docs/adr/`: approved project-specific architectural decisions.
-- `docs/agents/`: Matt Pocock Skills issue-tracker and domain-doc configuration.
-- `scripts/setup-ai.sh`: readiness checks by default; explicit interactive installation guidance with `--install`.
-
-## Setup and checks
-
-```bash
-scripts/setup-ai.sh
-scripts/check-template.sh
+make db
+make seed
+make run
 ```
 
-`setup-ai.sh` never installs in its default mode or edits agent configuration. It distinguishes local checks from plugin checks that require agent-side verification. `--install` is explicit and interactive; `--setup-labels` only adds missing default labels after confirming the GitHub remote and authentication.
+In a second terminal, start the simulation frontend:
 
-`setup-ai.sh` exits `0` with `READY` only when its checks pass; exits `2` with `NEEDS CONFIRMATION` when agent-side verification remains; and exits `1` with `BLOCKED` when required GitHub or repository prerequisites are missing. A ready result only describes what the script checks; it cannot prove plugin activation inside every vendor application.
+```sh
+make frontend-install
+make frontend
+```
 
-`scripts/check-template.sh` validates the published template structure, including its single Claude entry point and Cursor rule. It intentionally rejects a root `CLAUDE.md` in the template source. For existing repositories, run `setup-ai.sh` instead and preserve the existing Claude entry point.
+Open the Vite URL printed in the terminal (usually `http://127.0.0.1:5173`). The frontend
+proxies API calls to this backend. Create users, products, and dated purchases to build
+scenarios, then evaluate them and compare production rules with Jev shadow decisions. Jev
+remains optional; configure its key in `backend/.env` and restart the backend to enable it.
 
-### Agent routing smoke test
+The server and seed command apply embedded migrations automatically. A migration ledger
+and PostgreSQL advisory lock make repeated startup safe. PostgreSQL uses a named volume.
+`docker compose stop` stops it without deleting data.
 
-After installing skills, test in each agent used by the team:
+The seed is repeatable: it reuses one user, three products, and stable purchase keys.
+Day 36 is anchored to the seed user's creation time. Milk was purchased on days
+1/8/15/22/30, eggs on 1/9/17/25, and television once on day 1. On initial setup, milk
+and eggs should be suggested; television is explicitly ineligible. As real time passes,
+the estimates advance. Rerunning the seed does not reset user feedback or history.
 
-1. Give the agent a substantial epic card. It should create/reuse one parent issue, return the URL, and stop for your approval comment.
-2. Add an approval comment. The agent may then create useful vertical-slice child issues; it should not repeat settled requirements discovery.
-3. Give it a clear small issue. It should skip unnecessary specification and ticket decomposition.
-4. Give it a bug issue. It should reproduce and investigate root cause before modifying production code.
+```sh
+curl -sS http://127.0.0.1:8080/healthz
+curl -sS http://127.0.0.1:8080/users/00000000-0000-4000-8000-000000000001/replenishment
+curl -sS -X POST http://127.0.0.1:8080/users/00000000-0000-4000-8000-000000000001/decisions/evaluate
+curl -sS http://127.0.0.1:8080/users/00000000-0000-4000-8000-000000000001/suggestions
+```
 
-Repeat with OpenCode, Claude Code, Codex, and Cursor as applicable. Record any agent that repeats discovery, duplicates the parent issue, or starts work before approval, then adjust the shared routing policy or the smallest relevant agent entry point.
+Use a returned suggestion ID to record a real impression and accept or dismiss:
 
-## Upstream systems
+```sh
+SUGGESTION_ID='<id returned by the API>'
+curl -sS -X POST "http://127.0.0.1:8080/suggestions/$SUGGESTION_ID/shown"
+curl -sS -X POST "http://127.0.0.1:8080/suggestions/$SUGGESTION_ID/accept"
+# For another pending suggestion:
+# curl -sS -X POST "http://127.0.0.1:8080/suggestions/$SUGGESTION_ID/dismiss"
 
-- [Matt Pocock Skills](https://github.com/mattpocock/skills)
-- [Superpowers](https://github.com/obra/superpowers)
+curl -sS 'http://127.0.0.1:8080/users/00000000-0000-4000-8000-000000000001/decision-history?limit=50&offset=0'
+curl -sS http://127.0.0.1:8080/users/00000000-0000-4000-8000-000000000001/evaluation-metrics
+```
 
-Install each in the agents you actually use and keep them updated using their documented mechanisms. The repository stores routing policy and project context, not copied forks of those skill libraries.
+Acceptance explicitly adds products to the shopping list, never to the cart. The suggested
+list section remains a proposal until accepted. Repeating the same feedback is idempotent;
+accepting an already dismissed suggestion returns 409. Acceptance/dismissal also ensures
+one deduplicated impression. Reading suggestions alone records no impression.
+
+More request examples: [docs/api.md](docs/api.md).
+Architecture, schema, Mermaid flow and acceptance criteria: [docs/design.md](docs/design.md).
+Repository workflow and contribution guidance: [AGENTS.md](AGENTS.md) and
+[docs/engineering/development-workflow.md](docs/engineering/development-workflow.md).
+
+## Jev shadow evaluation
+
+Jev is available through TypeSafe directly or through OpenRouter. The OpenRouter path is
+configured in this project by default:
+
+```sh
+# Set this in the shell that launches the server; keep the key private.
+export OPENROUTER_API_KEY='your OpenRouter API key'
+export JEV_MODEL='typesafe/jev-1.13'
+make run
+```
+
+Alternatively, copy `backend/.env.example` to `backend/.env`, put your key in
+`OPENROUTER_API_KEY`, and restart the server after changing the key. Root `make run` loads
+those values automatically. You can also set `JEV_ENDPOINT`; its default is
+`https://openrouter.ai/api/alpha/decisions`. The model ID is `typesafe/jev-1.13`.
+OpenRouter's `~typesafe/jev-latest` alias is also available if you prefer the latest family
+model. OpenRouter bills the request to your OpenRouter account.
+
+Jev uses OpenRouter's dedicated Decisions API, not `/api/v1/chat/completions`. The request
+uses the same `state` and typed `choice` question shape as TypeSafe's System One API. See
+the [OpenRouter Jev model listing](https://openrouter.ai/typesafe) and its
+[Decisions API reference](https://openrouter.ai/docs/api/api-reference/alphadecisions/submit-a-decisions-request).
+
+For a direct TypeSafe key instead, set `TYPESAFE_API_KEY` and optionally
+`TYPESAFE_MODEL=jev-latest`; leave `OPENROUTER_API_KEY` empty. If both are set, OpenRouter
+takes precedence. Without either key, the application works entirely with rules.
+
+Only the six predefined action names are valid; application code validates the response
+enum, confidence and distribution. OpenRouter's reported cost and token usage and the
+actual returned model are logged. Prediction confidence, selected-option probability, and
+provider confidence are distinct.
+
+Production commits first. Shadow calls have a 3-second per-request deadline and an
+8-second total provider budget; persistence has a separate bounded deadline. Failures are
+logged when possible, and the response reports omitted comparisons. No automatic retries
+or background workers. Requests can therefore take several seconds when shadow is enabled.
+Jev receives aggregate state, never the raw purchase or event history.
+
+No live provider call is part of the test suite. Mock HTTP contract tests verify the
+adapter without spending API credits or requiring credentials.
+
+## Tests
+
+```sh
+make test        # Go tests; integration tests skip without TEST_DATABASE_URL
+make check       # Go vet, race-enabled tests, and frontend production build/typecheck
+make integration # real PostgreSQL, isolated temporary schemas, race detector
+```
+
+Or run everything together:
+
+```sh
+cd backend
+TEST_DATABASE_URL='postgres://smart:smart@localhost:55432/smartreplenish?sslmode=disable' go test -race ./...
+```
+
+Integration tests create and drop uniquely named schemas. The database role needs schema
+creation permissions. They do not reset application tables. Coverage includes migrations,
+HTTP evaluation/feedback, transaction rollback, purchase idempotency, concurrent evaluation,
+policy suppression, bundles, exact-context shadow pairing, and shadow-provider failure.
+
+## Main behavior
+
+- Purchase occasions are distinct local calendar dates. At least three occasions and a
+  replenishability score of 0.5 are required for an eligible estimate.
+- Median repurchase interval is the prediction baseline. Mean and population variance are
+  diagnostic fields. Remaining days may be negative when a product is overdue.
+- Regularity = `1 / (1 + mean(abs(interval - median)) / median)`.
+- Confidence = `min(1, interval_count / 4) * regularity * replenishable_score`.
+  This is an explainable heuristic, not a calibrated probability.
+- Rules suggest when remaining days <= 2 and confidence >= 0.7. Other candidates wait.
+- Policy blocks disabled suggestions, unavailable products, existing cart/list membership,
+  ineligible products, a 12-hour product cooldown, and existing pending suggestions.
+- A user row lock serializes purchase, preference, membership, evaluation, and feedback
+  changes. Shared product locks protect availability during production evaluation. Local
+  rules execute inside that transaction; no remote provider call holds its locks.
+- Decision logs distinguish selected, permitted, and executed actions. Suggestion and
+  production logs commit together. Failed transactions leave no partial suggestions.
+- Money is integer minor units in one application currency. Quantity is whole SKU units.
+  `total_amount` must equal the item totals; tax/discount fields are not modeled yet.
+- Purchases use an `Idempotency-Key`; changed content with the same key returns 409.
+  Purchases within the last 24 hours clear purchased items from current cart/list state;
+  older imported receipts preserve current membership.
+
+## Evaluation and limits
+
+Metrics are item-level descriptive observations. Acceptance/dismissal use unique shown
+item decisions; conversion uses only mature 24h/3d/7d windows. A purchase is attributed to
+the most recent preceding impression for that product within seven days, using purchase
+time. Duplicate receipts and repeated feedback do not inflate counts. Late imported
+receipts can change metrics. Shadow actions have agreement/coverage/error/latency metrics,
+not conversion claims. Dismissal and purchases after no action are only proxies.
+
+This is a local-development MVP. There is no authentication or tenant authorization; add
+those before public exposure. `/healthz` reports process liveness. The server verifies the
+database on startup. Lists accept `limit` (1–100) and `offset` (0–100000), request bodies are
+limited to 1 MiB, purchases to 100 items, evaluations to 200 previously purchased products.
+The fact loader currently reads a user's complete history from PostgreSQL; the provider
+still receives only aggregates. Larger histories need database aggregation and retention
+work before deployment. Notification fatigue, true unnecessary-suggestion labels, stable
+A/B assignment, fractional quantities and calibrated confidence remain future work.
