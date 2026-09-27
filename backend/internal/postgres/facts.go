@@ -60,14 +60,14 @@ func loadFacts(ctx context.Context, q querier, user string, lock bool) (app.Fact
 	if err != nil {
 		return f, err
 	}
-	rows, err = q.Query(ctx, "SELECT product_id::text,in_cart,in_list FROM user_product_state WHERE user_id=$1", user)
+	rows, err = q.Query(ctx, "SELECT product_id::text,in_cart,in_list,cart_quantity,auto_added FROM user_product_state WHERE user_id=$1", user)
 	if err != nil {
 		return f, err
 	}
 	for rows.Next() {
 		var id string
 		var m domain.Membership
-		if err = rows.Scan(&id, &m.InCart, &m.InList); err != nil {
+		if err = rows.Scan(&id, &m.InCart, &m.InList, &m.CartQuantity, &m.AutoAdded); err != nil {
 			rows.Close()
 			return f, err
 		}

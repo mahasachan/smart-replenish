@@ -87,3 +87,17 @@ func TestCalendarDaysAcrossDST(t *testing.T) {
 		t.Fatalf("DST changed calendar interval: %+v", p)
 	}
 }
+func TestMedianQuantityPerOccasion(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	day := func(d, q int) domain.Observation {
+		return domain.Observation{PurchasedAt: time.Date(2026, 2, d, 9, 0, 0, 0, time.UTC), Quantity: int64(q)}
+	}
+	// Two receipts on Feb 8 form one occasion of three units.
+	p := Predict(domain.Product{ReplenishableScore: .9}, []domain.Observation{day(1, 2), day(8, 1), day(8, 2), day(15, 2), day(22, 6)}, now, time.UTC)
+	if p.MedianQuantity != 2.5 {
+		t.Fatalf("median quantity %v", p.MedianQuantity)
+	}
+	if Predict(domain.Product{}, nil, now, time.UTC).MedianQuantity != 0 {
+		t.Fatal("empty history must have zero median quantity")
+	}
+}

@@ -19,6 +19,7 @@ type Prediction struct {
 	IntervalVariance       float64   `json:"interval_variance"`
 	PurchaseRegularity     float64   `json:"purchase_regularity"`
 	AverageQuantity        float64   `json:"average_quantity"`
+	MedianQuantity         float64   `json:"median_quantity"`
 	EstimatedDaysRemaining *float64  `json:"estimated_days_remaining"`
 	PredictionConfidence   float64   `json:"prediction_confidence"`
 }
@@ -54,10 +55,13 @@ func Predict(product domain.Product, observations []domain.Observation, now time
 		}
 	}
 	days := make([]time.Time, 0, len(quantities))
+	perOccasion := make([]float64, 0, len(quantities))
 	for d, q := range quantities {
 		days = append(days, d)
+		perOccasion = append(perOccasion, q)
 		p.AverageQuantity += q
 	}
+	p.MedianQuantity = Median(perOccasion)
 	sort.Slice(days, func(i, j int) bool { return days[i].Before(days[j]) })
 	p.TotalPurchaseCount = len(days)
 	if len(days) > 0 {

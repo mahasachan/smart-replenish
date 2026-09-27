@@ -49,6 +49,7 @@ type Store interface {
 	CreateUser(context.Context, domain.User) error
 	CreateProduct(context.Context, domain.Product) error
 	UpdateProduct(context.Context, string, ProductPatch) (domain.Product, error)
+	Products(context.Context, int, int) ([]domain.Product, error)
 	Facts(context.Context, string) (Facts, error)
 	WithUser(context.Context, string, func(Transaction) error) error
 	Suggestion(context.Context, string) (domain.Suggestion, error)

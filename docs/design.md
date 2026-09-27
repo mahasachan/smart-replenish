@@ -1,6 +1,6 @@
 # Smart Replenishment MVP design
 
-**Status: MVP implemented, 2026-09-22.**
+**Status: MVP implemented, 2026-09-22. Running-low confirmation and cart auto-add added 2026-09-27 (ADR-0001).**
 The Go service lives in `backend/`; the React simulation frontend lives in `frontend/`.
 This document preserves the architecture and acceptance criteria. See the root README
 for setup, actual runtime limits, and verification commands. The Jev adapter is covered
@@ -19,7 +19,7 @@ One modular Go monolith, PostgreSQL, REST. The invariant is:
 | backend/internal/replenishment | Pure interval statistics, eligibility, confidence |
 | backend/internal/decision | Compact versioned context, DecisionEngine interface, rules and Jev |
 | backend/internal/policy | Validate enum, permissions, current membership, availability, cooldown |
-| backend/internal/action | Construct bounded suggestions; never purchase or modify cart |
+| backend/internal/action | Construct bounded suggestions; never purchase (cart changes happen only in confirmed feedback) |
 | backend/internal/app | Orchestrate evaluation, transactions, feedback, metrics |
 | backend/internal/postgres | SQL and transaction implementation; no business decisions |
 | backend/internal/httpapi | Decode and validate requests, map errors, encode responses |
@@ -90,7 +90,7 @@ type Prediction struct {
 }
 
 type DecisionContext struct {
-    Version  string // v1
+    Version  string // v2 (adds running-low snooze and median quantity)
     AsOf     time.Time
     User     UserContext
     Product  ProductContext
@@ -187,7 +187,7 @@ units and currency conversion are deferred).
 - products: id, unique sku, name, category, brand, unit, replenishable_score [0,1], available.
 - purchases: id, user_id FK, purchased_at, source enum, total_amount >= 0.
 - purchase_items: (purchase_id, product_id) PK/FKs, quantity > 0, unit_price >= 0.
-- user_product_state: (user_id, product_id) PK/FKs, in_cart, in_list.
+- user_product_state: (user_id, product_id) PK/FKs, in_cart, in_list, cart_quantity (1–999 in cart, else 0), auto_added.
 - decision_logs: id, evaluation_id, user/product FKs, engine, shadow, decision_context JSONB,
   decision_result JSONB, policy_result JSONB (includes refreshed execution context), executed_action,
   error, created_at. A shadow row always executes DO_NOTHING.
@@ -214,7 +214,7 @@ and product_id. Shadow failures are logged and do not prevent rule execution.
 flowchart TD
   HTTP[Purchase API] --> Facts[(Purchases and events)]
   Facts --> Predict[Deterministic prediction]
-  Predict --> Context[DecisionContext v1]
+  Predict --> Context[DecisionContext v2]
   Context --> Rules[Production rules]
   Context --> Jev[Jev shadow]
   Rules --> Policy[Re-read facts and validate policy]
@@ -243,7 +243,10 @@ Rules suggest when remaining days <= 2 and confidence >= 0.7; otherwise WAIT. Al
 actions are supported by policy and executor; WAIT and DO_NOTHING have no suggestion.
 Bundles combine only individually permitted bundle candidates; a singleton degrades to
 SUGGEST_NOW with the final action recorded. Suggested-list entries are proposals, not
-accepted list items. Accept explicitly adds linked products to the shopping list; never cart.
+accepted list items. Accept explicitly adds linked products to the shopping list. Production
+rules choose ASK_IF_RUNNING_LOW. A yes answer adds the product to the cart with its median
+purchase quantity, and "not yet" snoozes it for half the median interval (at least one day).
+See ADR-0001; checkout remains out of scope.
 A pending suggestion blocks duplicates even after cooldown. GET suggestions does not imply
 an impression; the client must POST shown. Accept/dismiss are idempotent; contradictory
 feedback returns conflict.

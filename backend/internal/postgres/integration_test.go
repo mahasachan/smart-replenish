@@ -124,8 +124,8 @@ func TestEndToEndHTTPAndFeedback(t *testing.T) {
 		t.Fatal(err)
 	}
 	member := f.Membership[sg.Items[0].ProductID]
-	if !member.InList || member.InCart {
-		t.Fatalf("membership %+v", member)
+	if sg.Kind != "ASK_IF_RUNNING_LOW" || member.InList || !member.InCart || member.CartQuantity != 1 || !member.AutoAdded {
+		t.Fatalf("confirmed question did not add to cart: %s %+v", sg.Kind, member)
 	}
 	counts := map[string]int{}
 	for _, e := range f.Events {
@@ -210,7 +210,7 @@ func TestConcurrentEvaluationAndPolicy(t *testing.T) {
 	}
 	later := s.Now().Add(13 * time.Hour)
 	s.Now = func() time.Time { return later }
-	if err = s.SetMembership(ctx, u.ID, p[0].ID, domain.Membership{InCart: true}); err != nil {
+	if _, err = s.SetMembership(ctx, u.ID, p[0].ID, domain.Membership{InCart: true}); err != nil {
 		t.Fatal(err)
 	}
 	unavailable := false
@@ -371,5 +371,163 @@ func TestSuggestionAndLogRollback(t *testing.T) {
 	}
 	if len(logs) != 0 || len(f.Suggestions) != 0 {
 		t.Fatal("partial decision transaction committed")
+	}
+}
+func TestRunningLowQuestionCartAndSnooze(t *testing.T) {
+	s, store := setup(t)
+	u, products := seed(t, s)
+	ctx := context.Background()
+	milk, eggs := products[0].ID, products[1].ID
+	// Milk was mostly bought two at a time, so a confirmed question adds two units.
+	for i, day := range []int{-92, -85, -78, -71, -64, -57} {
+		p := domain.Purchase{UserID: u.ID, PurchasedAt: s.Now().AddDate(0, 0, day), Source: "receipt", TotalAmount: 200, Items: []domain.PurchaseItem{{ProductID: milk, Quantity: 2, UnitPrice: 100}}}
+		if _, err := s.Purchase(ctx, p, fmt.Sprintf("double-%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := httpapi.API{Service: s}.Handler()
+	request := func(method, path, body string, status int) []byte {
+		t.Helper()
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest(method, path, strings.NewReader(body)))
+		if w.Code != status {
+			t.Fatalf("%s %s: %d %s", method, path, w.Code, w.Body.String())
+		}
+		return w.Body.Bytes()
+	}
+	var e app.Evaluation
+	if err := json.Unmarshal(request("POST", "/users/"+u.ID+"/decisions/evaluate", "", 200), &e); err != nil {
+		t.Fatal(err)
+	}
+	questions := map[string]domain.Suggestion{}
+	for _, sg := range e.Suggestions {
+		if sg.Kind != "ASK_IF_RUNNING_LOW" || sg.Status != "pending" {
+			t.Fatalf("expected a pending running-low question: %+v", sg)
+		}
+		questions[sg.Items[0].ProductID] = sg
+	}
+	if len(questions) != 2 {
+		t.Fatalf("questions: %+v", e.Suggestions)
+	}
+	request("POST", "/suggestions/"+questions[milk].ID+"/answer", `{}`, 400)
+	request("POST", "/suggestions/"+questions[milk].ID+"/answer", `{"running_low":true}`, 200)
+	request("POST", "/suggestions/"+questions[milk].ID+"/answer", `{"running_low":true}`, 200)
+	request("POST", "/suggestions/"+questions[milk].ID+"/answer", `{"running_low":false}`, 409)
+	request("POST", "/suggestions/"+questions[eggs].ID+"/answer", `{"running_low":false}`, 200)
+
+	var cart []app.CartLine
+	if err := json.Unmarshal(request("GET", "/users/"+u.ID+"/cart", "", 200), &cart); err != nil {
+		t.Fatal(err)
+	}
+	if len(cart) != 1 || cart[0].ProductID != milk || !cart[0].InCart || cart[0].CartQuantity != 2 || !cart[0].AutoAdded || cart[0].InList {
+		t.Fatalf("cart after yes/no: %+v", cart)
+	}
+	f, err := store.Facts(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	added := 0
+	for _, ev := range f.Events {
+		if ev.Type == "ADDED_TO_CART" && ev.DecisionID != nil && *ev.DecisionID == questions[milk].Items[0].DecisionID {
+			added++
+		}
+		if ev.Type == "PURCHASED" && ev.CreatedAt.After(s.Now().Add(-time.Hour)) {
+			t.Fatal("confirmation must never create a purchase")
+		}
+	}
+	if added != 1 || len(f.PurchaseDates) != 16 {
+		t.Fatalf("auto-add events %d, purchases %d", added, len(f.PurchaseDates))
+	}
+
+	// Manual quantity edits keep the marker; removing the item clears it.
+	request("PUT", "/users/"+u.ID+"/products/"+milk+"/state", `{"in_cart":true,"cart_quantity":3}`, 200)
+	request("PUT", "/users/"+u.ID+"/products/"+milk+"/state", `{"in_cart":false,"cart_quantity":3}`, 400)
+	request("PUT", "/users/"+u.ID+"/products/"+milk+"/state", `{"in_cart":true,"cart_quantity":1000}`, 400)
+	f, _ = store.Facts(ctx, u.ID)
+	if m := f.Membership[milk]; m.CartQuantity != 3 || !m.AutoAdded {
+		t.Fatalf("manual quantity: %+v", m)
+	}
+
+	// Eggs' median interval is eight days, so "not yet" snoozes them for four days.
+	for _, hours := range []float64{13, 95} {
+		later := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC).Add(time.Duration(hours * float64(time.Hour)))
+		s.Now = func() time.Time { return later }
+		e, err = s.Evaluate(ctx, u.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range e.Decisions {
+			if d.ProductID == eggs && (d.Policy == nil || d.Policy.Reason != "running_low_snoozed") {
+				t.Fatalf("eggs not snoozed at +%vh: %+v", hours, d.Policy)
+			}
+		}
+		if len(e.Suggestions) != 0 {
+			t.Fatalf("asked during snooze or while in cart: %+v", e.Suggestions)
+		}
+	}
+	later := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC).Add(97 * time.Hour)
+	s.Now = func() time.Time { return later }
+	e, err = s.Evaluate(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(e.Suggestions) != 1 || e.Suggestions[0].Items[0].ProductID != eggs {
+		t.Fatalf("eggs should be asked again after the snooze: %+v", e.Suggestions)
+	}
+
+	var metrics app.Metrics
+	if err = json.Unmarshal(request("GET", "/users/"+u.ID+"/evaluation-metrics", "", 200), &metrics); err != nil {
+		t.Fatal(err)
+	}
+	if r := metrics.RunningLow; r.QuestionsShown != 2 || r.Confirmed.Numerator != 1 || r.Denied.Numerator != 1 {
+		t.Fatalf("running-low metrics: %+v", r)
+	}
+	var catalogue []domain.Product
+	if err = json.Unmarshal(request("GET", "/products?limit=2", "", 200), &catalogue); err != nil || len(catalogue) != 2 || catalogue[0].Name != "Eggs" {
+		t.Fatalf("catalogue %+v %v", catalogue, err)
+	}
+	request("GET", "/products?limit=0", "", 400)
+}
+func TestMigrationUpgradesExistingCartRows(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("set TEST_DATABASE_URL to run isolated PostgreSQL integration tests")
+	}
+	ctx := context.Background()
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := "test_" + strings.ReplaceAll(domain.NewID(), "-", "")
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if _, err = pool.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
+	initial, err := os.ReadFile("../../migrations/001_initial.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, product := domain.NewID(), domain.NewID()
+	for _, sql := range []string{string(initial),
+		"CREATE TABLE schema_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now()); INSERT INTO schema_migrations(name) VALUES('001_initial.sql')",
+		"INSERT INTO users VALUES('" + user + "','UTC',false,true,now())",
+		"INSERT INTO products VALUES('" + product + "','sku','Soap','home','','bar',0.9,true)",
+		"INSERT INTO user_product_state VALUES('" + user + "','" + product + "',true,false)"} {
+		if _, err = pool.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = migrations.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	var quantity int64
+	if err = pool.QueryRow(ctx, "SELECT cart_quantity FROM user_product_state").Scan(&quantity); err != nil || quantity != 1 {
+		t.Fatalf("existing cart row quantity %d %v", quantity, err)
 	}
 }

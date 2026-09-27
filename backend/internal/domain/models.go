@@ -67,9 +67,15 @@ type Observation struct {
 	Quantity    int64
 }
 type Membership struct {
-	InCart bool `json:"in_cart"`
-	InList bool `json:"in_list"`
+	InCart       bool  `json:"in_cart"`
+	InList       bool  `json:"in_list"`
+	CartQuantity int64 `json:"cart_quantity"`
+	// AutoAdded marks a cart line added after the user confirmed a running-low question.
+	AutoAdded bool `json:"auto_added"`
 }
+
+const MaxCartQuantity = 999
+
 type Event struct {
 	ID           string          `json:"id"`
 	UserID       string          `json:"user_id"`

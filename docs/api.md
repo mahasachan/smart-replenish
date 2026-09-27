@@ -41,11 +41,17 @@ curl -sS -X PATCH http://127.0.0.1:8080/products/00000000-0000-4000-8000-0000000
   -H 'Content-Type: application/json' -d '{"available":false}'
 
 curl -sS -X PUT http://127.0.0.1:8080/users/00000000-0000-4000-8000-000000000001/products/00000000-0000-4000-8000-000000000101/state \
-  -H 'Content-Type: application/json' -d '{"in_cart":true,"in_list":false}'
+  -H 'Content-Type: application/json' -d '{"in_cart":true,"in_list":false,"cart_quantity":2}'
+
+curl -sS http://127.0.0.1:8080/users/00000000-0000-4000-8000-000000000001/cart
+curl -sS 'http://127.0.0.1:8080/products?limit=100&offset=0'
 ```
 
-PUT replaces both membership flags; omitted flags are false. Membership changes create
-corresponding events. The application never adds products to the cart on its own.
+PUT replaces the membership; omitted flags are false. `cart_quantity` must be 1–999 for a
+cart item (it defaults to 1) and 0 otherwise. The `auto_added` marker is kept while the
+item stays in the cart and cleared when it leaves. Membership changes create corresponding
+events. GET cart returns the products that are in the cart or on the list. The application
+adds a product to the cart itself only after the user confirms a running-low question.
 User PATCH supports `timezone`, `suggestion_enabled`, and `notification_enabled`.
 Product PATCH supports `available` and `replenishable_score`.
 
@@ -72,10 +78,25 @@ curl -sS http://127.0.0.1:8080/users/00000000-0000-4000-8000-000000000001/evalua
 ```
 
 Evaluation creates a log for every purchased product, including ineligible products whose
-policy outcome is DO_NOTHING. Repeating evaluation creates new audit records but pending
-suggestions, membership checks and cooldowns prevent duplicate proposals. Rules currently
-choose SUGGEST_NOW or WAIT; other bounded actions are implemented in policy and execution
-for future production engines. Configuring Jev only enables shadow evaluation.
+policy outcome is DO_NOTHING. Repeating evaluation creates new audit records, but pending
+questions, membership checks, cooldowns and running-low snoozes prevent duplicates. Rules
+choose ASK_IF_RUNNING_LOW or WAIT. The other bounded actions are implemented in policy and
+execution for future production engines. Configuring Jev only enables shadow evaluation.
+
+## Running-low answers
+
+```sh
+QUESTION_ID='<returned ASK_IF_RUNNING_LOW suggestion UUID>'
+curl -sS -X POST "http://127.0.0.1:8080/suggestions/$QUESTION_ID/shown"
+curl -sS -X POST "http://127.0.0.1:8080/suggestions/$QUESTION_ID/answer" -d '{"running_low":true}'
+```
+
+`running_low` is required. `true` accepts the question, adds the product to the cart with
+its median purchase quantity and marks it `auto_added`. `false` dismisses the question and
+snoozes that product for half its median repurchase interval (minimum one day). Answering a
+question that is not `ASK_IF_RUNNING_LOW` returns 400. Answering is idempotent, and the
+opposite answer returns 409. `accept` and `dismiss` on a question behave the same as
+`true` and `false`. Evaluation metrics include `running_low` precision and counts.
 
 ## Feedback
 

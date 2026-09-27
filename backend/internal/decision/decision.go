@@ -16,7 +16,7 @@ const (
 	SuggestBundle            Action = "SUGGEST_BUNDLE"
 	AddToSmartListSuggestion Action = "ADD_TO_SMART_LIST_SUGGESTION"
 	AskIfRunningLow          Action = "ASK_IF_RUNNING_LOW"
-	ContextVersion                  = "v1"
+	ContextVersion                  = "v2"
 )
 
 func (a Action) Valid() bool {
@@ -46,6 +46,8 @@ type ProductContext struct {
 	CurrentlyInShoppingList bool     `json:"currently_in_shopping_list"`
 	PendingSuggestion       bool     `json:"pending_suggestion"`
 	LastSuggestionHoursAgo  *float64 `json:"last_suggestion_hours_ago"`
+	// Set while a "not yet" answer to a running-low question is suppressing new questions.
+	RunningLowSnoozeHoursRemaining *float64 `json:"running_low_snooze_hours_remaining"`
 }
 type ShoppingContext struct {
 	CartItemCount           int  `json:"cart_item_count"`
@@ -75,10 +77,11 @@ type DecisionEngine interface {
 }
 type RuleBasedDecisionEngine struct{}
 
+// Decide asks the user to confirm a predicted run-out; a "yes" answer adds the item to the cart.
 func (RuleBasedDecisionEngine) Decide(_ context.Context, c DecisionContext) (DecisionResult, error) {
 	a := Wait
 	if c.Product.Eligible && c.Product.EstimatedDaysRemaining != nil && *c.Product.EstimatedDaysRemaining <= 2 && c.Product.PredictionConfidence >= 0.7 {
-		a = SuggestNow
+		a = AskIfRunningLow
 	}
-	return DecisionResult{Action: a, Confidence: c.Product.PredictionConfidence, Provider: "rules", Model: "median-v1", ContextVersion: c.Version}, nil
+	return DecisionResult{Action: a, Confidence: c.Product.PredictionConfidence, Provider: "rules", Model: "median-ask-v1", ContextVersion: c.Version}, nil
 }
