@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"smartreplenish/internal/decision"
 	"smartreplenish/internal/domain"
 	"time"
 )
@@ -28,6 +29,14 @@ type EngineMetrics struct {
 	KnownCostUSD     *float64 `json:"known_cost_usd"`
 	CostCoverage     int      `json:"cost_coverage"`
 }
+
+// RunningLowMetrics treat each answer as an explicit label for the prediction.
+type RunningLowMetrics struct {
+	QuestionsShown         int  `json:"questions_shown"`
+	Confirmed              Rate `json:"confirmed_prediction_precision"`
+	Denied                 Rate `json:"denied"`
+	PurchaseAfterConfirm7d Rate `json:"purchase_within_7d_after_confirm"`
+}
 type Metrics struct {
 	AsOf                time.Time                `json:"as_of"`
 	Acceptance          Rate                     `json:"suggestion_acceptance"`
@@ -37,6 +46,7 @@ type Metrics struct {
 	ShadowCoverage      Rate                     `json:"shadow_valid_pair_coverage"`
 	ShadowAgreement     Rate                     `json:"shadow_action_agreement"`
 	Engines             map[string]EngineMetrics `json:"engines"`
+	RunningLow          RunningLowMetrics        `json:"running_low"`
 	Notes               []string                 `json:"notes"`
 }
 
@@ -54,7 +64,7 @@ func (s *Service) Metrics(ctx context.Context, user string) (Metrics, error) {
 
 // ComputeMetrics counts each decision once and excludes immature conversion windows.
 func ComputeMetrics(events []domain.Event, logs []DecisionLog, now time.Time) Metrics {
-	m := Metrics{AsOf: now, Conversion: map[string]Rate{}, Engines: map[string]EngineMetrics{}, Notes: []string{"Item-level descriptive rates, not causal lift; unknown rates and costs are null.", "Dismissal is a false-positive proxy. No outbound notifications are sent.", "No-action episodes are non-overlapping seven-day windows per product.", "Late receipts may revise metrics; conversion windows start at the first shown event."}}
+	m := Metrics{AsOf: now, Conversion: map[string]Rate{}, Engines: map[string]EngineMetrics{}, Notes: []string{"Item-level descriptive rates, not causal lift; unknown rates and costs are null.", "Dismissal is a false-positive proxy. No outbound notifications are sent.", "No-action episodes are non-overlapping seven-day windows per product.", "Late receipts may revise metrics; conversion windows start at the first shown event.", "Running-low precision counts yes answers among shown questions; unanswered questions stay in the denominator."}}
 	shown := map[string]time.Time{}
 	accepted, dismissed := map[string]bool{}, map[string]bool{}
 	purchases := map[string][]time.Time{}
@@ -159,6 +169,32 @@ func ComputeMetrics(events []domain.Event, logs []DecisionLog, now time.Time) Me
 			}
 		}
 	}
+	asked, yes, no, mature, bought := 0, 0, 0, 0, 0
+	for _, p := range prod {
+		start, ok := shown[p.ID]
+		if !ok || p.ExecutedAction != decision.AskIfRunningLow {
+			continue
+		}
+		asked++
+		if dismissed[p.ID] {
+			no++
+		}
+		if !accepted[p.ID] {
+			continue
+		}
+		yes++
+		if now.Sub(start) < 7*24*time.Hour {
+			continue
+		}
+		mature++
+		for _, t := range purchases[p.ID] {
+			if !t.Before(start) && t.Sub(start) <= 7*24*time.Hour {
+				bought++
+				break
+			}
+		}
+	}
+	m.RunningLow = RunningLowMetrics{QuestionsShown: asked, Confirmed: ratio(yes, asked), Denied: ratio(no, asked), PurchaseAfterConfirm7d: ratio(bought, mature)}
 	m.ShadowCoverage = ratio(pairs, len(prod))
 	m.ShadowAgreement = ratio(agree, pairs)
 	m.NoActionOpportunity = ratio(opportunities, episodes)

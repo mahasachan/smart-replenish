@@ -6,8 +6,11 @@ suggestions. Application code owns every side effect:
 **Facts → Prediction → Decision → Policy → Action → Feedback**
 
 The rule engine controls production. Jev can evaluate the same compact contexts in
-shadow mode; its decisions are logged and never executed. No automatic purchases,
-cart additions, outbound notifications, ML, Redis, or background infrastructure.
+shadow mode; its decisions are logged and never executed. When a purchased product looks
+close to running out, the rules ask the shopper **"Running low on X?"**. A yes adds it to
+the cart with the usual quantity; "not yet" snoozes the question
+([ADR-0001](docs/adr/0001-running-low-confirmation-adds-to-cart.md)). There are no automatic
+purchases or checkout, outbound notifications, ML, Redis, or background infrastructure.
 
 ## Run locally
 
@@ -36,18 +39,30 @@ make frontend
 ```
 
 Open the Vite URL printed in the terminal (usually `http://127.0.0.1:5173`). The frontend
-proxies API calls to this backend. Create users, products, and dated purchases to build
-scenarios, then evaluate them and compare production rules with Jev shadow decisions. Jev
-remains optional; configure its key in `backend/.env` and restart the backend to enable it.
+proxies API calls to this backend. The sidebar has two modes:
+
+- **Shop** (`#shop`) is the customer app. It has a product catalogue with categories and
+  search, and a cart with quantities. When it opens, it asks the backend what is running
+  low and shows "Running low?" cards with **Yes, add N** / **Not yet** buttons. Confirmed
+  items appear in the cart marked as auto-added. "Place demo order" records a purchase
+  without payment, so the next prediction includes it.
+- **Decision lab** (`#lab`) is the internal score tool. For each product it shows the
+  prediction (days left, interval, regularity, confidence, usual quantity), the rule
+  decision and policy outcome, and Jev's shadow action. For Jev it also shows confidence,
+  the probability of each action, latency and cost. It also shows rules-vs-Jev agreement,
+  running-low feedback metrics and the scenario-building forms.
+
+Jev remains optional; configure its key in `backend/.env` and restart the backend to enable it.
 
 The server and seed command apply embedded migrations automatically. A migration ledger
 and PostgreSQL advisory lock make repeated startup safe. PostgreSQL uses a named volume.
 `docker compose stop` stops it without deleting data.
 
-The seed is repeatable: it reuses one user, three products, and stable purchase keys.
+The seed is repeatable: it reuses one user, a small catalogue, and stable purchase keys.
 Day 36 is anchored to the seed user's creation time. Milk was purchased on days
-1/8/15/22/30, eggs on 1/9/17/25, and television once on day 1. On initial setup, milk
-and eggs should be suggested; television is explicitly ineligible. As real time passes,
+1/8/15/22/30, eggs on 1/9/17/25, television once on day 1, and drinking water (two packs
+at a time) on days 2/9/16/23/31. On initial setup, milk, eggs and water trigger running-low
+questions; television is explicitly ineligible. Eight more catalogue products have no history. As real time passes,
 the estimates advance. Rerunning the seed does not reset user feedback or history.
 
 ```sh
@@ -57,22 +72,25 @@ curl -sS -X POST http://127.0.0.1:8080/users/00000000-0000-4000-8000-00000000000
 curl -sS http://127.0.0.1:8080/users/00000000-0000-4000-8000-000000000001/suggestions
 ```
 
-Use a returned suggestion ID to record a real impression and accept or dismiss:
+Use a returned question ID to record a real impression and answer it:
 
 ```sh
 SUGGESTION_ID='<id returned by the API>'
 curl -sS -X POST "http://127.0.0.1:8080/suggestions/$SUGGESTION_ID/shown"
-curl -sS -X POST "http://127.0.0.1:8080/suggestions/$SUGGESTION_ID/accept"
-# For another pending suggestion:
-# curl -sS -X POST "http://127.0.0.1:8080/suggestions/$SUGGESTION_ID/dismiss"
+curl -sS -X POST "http://127.0.0.1:8080/suggestions/$SUGGESTION_ID/answer" -d '{"running_low":true}'
+# "Not yet" for another pending question:
+# curl -sS -X POST "http://127.0.0.1:8080/suggestions/$SUGGESTION_ID/answer" -d '{"running_low":false}'
+curl -sS http://127.0.0.1:8080/users/00000000-0000-4000-8000-000000000001/cart
 
 curl -sS 'http://127.0.0.1:8080/users/00000000-0000-4000-8000-000000000001/decision-history?limit=50&offset=0'
 curl -sS http://127.0.0.1:8080/users/00000000-0000-4000-8000-000000000001/evaluation-metrics
 ```
 
-Acceptance explicitly adds products to the shopping list, never to the cart. The suggested
-list section remains a proposal until accepted. Repeating the same feedback is idempotent;
-accepting an already dismissed suggestion returns 409. Acceptance/dismissal also ensures
+A yes answer adds the product to the cart with its median purchase quantity and marks the
+line `auto_added`; it never checks out. "Not yet" snoozes questions for that product for
+half its median repurchase interval (at least one day). Other suggestion kinds keep the
+list semantics: acceptance adds them to the shopping list. Repeating the same feedback is
+idempotent; contradicting it (yes after not yet, accept after dismiss) returns 409. Acceptance/dismissal also ensures
 one deduplicated impression. Reading suggestions alone records no impression.
 
 More request examples: [docs/api.md](docs/api.md).
@@ -151,9 +169,11 @@ policy suppression, bundles, exact-context shadow pairing, and shadow-provider f
 - Regularity = `1 / (1 + mean(abs(interval - median)) / median)`.
 - Confidence = `min(1, interval_count / 4) * regularity * replenishable_score`.
   This is an explainable heuristic, not a calibrated probability.
-- Rules suggest when remaining days <= 2 and confidence >= 0.7. Other candidates wait.
+- Rules ask "running low?" when remaining days <= 2 and confidence >= 0.7. Other candidates wait.
 - Policy blocks disabled suggestions, unavailable products, existing cart/list membership,
-  ineligible products, a 12-hour product cooldown, and existing pending suggestions.
+  ineligible products, a 12-hour product cooldown, existing pending suggestions, and
+  products snoozed by a "not yet" answer.
+- A confirmed question adds the median per-occasion quantity (1–999) to the cart.
 - A user row lock serializes purchase, preference, membership, evaluation, and feedback
   changes. Shared product locks protect availability during production evaluation. Local
   rules execute inside that transaction; no remote provider call holds its locks.
@@ -172,7 +192,8 @@ item decisions; conversion uses only mature 24h/3d/7d windows. A purchase is att
 the most recent preceding impression for that product within seven days, using purchase
 time. Duplicate receipts and repeated feedback do not inflate counts. Late imported
 receipts can change metrics. Shadow actions have agreement/coverage/error/latency metrics,
-not conversion claims. Dismissal and purchases after no action are only proxies.
+not conversion claims. Dismissal and purchases after no action are only proxies; running-low
+answers are explicit labels, reported as prediction precision (yes among shown questions).
 
 This is a local-development MVP. There is no authentication or tenant authorization; add
 those before public exposure. `/healthz` reports process liveness. The server verifies the

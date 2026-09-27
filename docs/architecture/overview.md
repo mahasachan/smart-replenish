@@ -1,11 +1,12 @@
 # Architecture overview
 
 SmartReplenish is a local-development replenishment simulator. It estimates when a user
-may need to buy a product again and creates suggestions, never purchases. The rule engine
-controls suggestions; TypeSafe Jev can make shadow decisions for comparison only.
+may need to buy a product again and asks the user whether it is running low. A yes adds the
+product to the cart, never a purchase ([ADR-0001](../adr/0001-running-low-confirmation-adds-to-cart.md)).
+The rule engine controls these questions; TypeSafe Jev can make shadow decisions for comparison only.
 
-The repository has a Go service in `backend/` and a React/TypeScript simulation UI in
-`frontend/`. The root Makefile coordinates both. The UI calls the existing REST API
+The repository has a Go service in `backend/` and a React/TypeScript UI in `frontend/` with
+two sidebar modes: a customer Shop and an internal Decision lab for rule and Jev scores. The root Makefile coordinates both. The UI calls the existing REST API
 through Vite's development proxy. The Go service is a modular monolith: PostgreSQL
 persists facts, suggestions, feedback, and decision logs; its internal packages separate
 prediction, decision, policy, action, storage, and HTTP handling.

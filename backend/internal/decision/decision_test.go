@@ -13,7 +13,7 @@ func TestRuleBoundaries(t *testing.T) {
 		days, confidence float64
 		eligible         bool
 		want             Action
-	}{{2, .7, true, SuggestNow}, {2.01, .7, true, Wait}, {2, .699, true, Wait}, {-4, .9, true, SuggestNow}, {-4, .9, false, Wait}} {
+	}{{2, .7, true, AskIfRunningLow}, {2.01, .7, true, Wait}, {2, .699, true, Wait}, {-4, .9, true, AskIfRunningLow}, {-4, .9, false, Wait}} {
 		c := DecisionContext{Version: ContextVersion, Product: ProductContext{Prediction: replenishment.Prediction{Eligible: tc.eligible, EstimatedDaysRemaining: &tc.days, PredictionConfidence: tc.confidence}}}
 		r, err := (RuleBasedDecisionEngine{}).Decide(context.Background(), c)
 		if err != nil || r.Action != tc.want {
@@ -25,7 +25,7 @@ func TestContextUnknownAndObservedFacts(t *testing.T) {
 	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
 	in := ContextInput{User: domain.User{Timezone: "Asia/Bangkok", SuggestionEnabled: true}, Product: domain.Product{Category: "milk", Available: true}, Prediction: replenishment.Prediction{ProductID: "milk"}, Membership: domain.Membership{InCart: true}, CartCount: 4, ListCount: 3}
 	c := BuildContext(in, now)
-	if c.Version != "v1" || c.User.SuggestionAcceptanceRate != nil || c.User.LastSuggestionHoursAgo != nil || c.User.ShoppingFrequency != "unknown" || c.User.PreferredShoppingDay != nil {
+	if c.Version != "v2" || c.Product.RunningLowSnoozeHoursRemaining != nil || c.User.SuggestionAcceptanceRate != nil || c.User.LastSuggestionHoursAgo != nil || c.User.ShoppingFrequency != "unknown" || c.User.PreferredShoppingDay != nil {
 		t.Fatalf("invented facts: %+v", c)
 	}
 	last := now.Add(-32 * time.Hour)
@@ -40,5 +40,17 @@ func TestContextUnknownAndObservedFacts(t *testing.T) {
 	c = BuildContext(in, now)
 	if *c.User.SuggestionAcceptanceRate != .6 || *c.User.SuggestionDismissRate != .2 || *c.Product.LastSuggestionHoursAgo != 32 || !c.Product.CurrentlyInCart || !c.Shopping.UserIsCurrentlyShopping || c.User.ShoppingFrequency != "weekly" || *c.User.PreferredShoppingDay != "Monday" {
 		t.Fatalf("missing facts: %+v", c)
+	}
+}
+func TestContextRunningLowSnooze(t *testing.T) {
+	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	past, future := now.Add(-time.Minute), now.Add(36*time.Hour)
+	in := ContextInput{User: domain.User{Timezone: "UTC"}, RunningLowSnoozedUntil: &past}
+	if c := BuildContext(in, now); c.Product.RunningLowSnoozeHoursRemaining != nil {
+		t.Fatal("expired snooze still reported")
+	}
+	in.RunningLowSnoozedUntil = &future
+	if c := BuildContext(in, now); c.Product.RunningLowSnoozeHoursRemaining == nil || *c.Product.RunningLowSnoozeHoursRemaining != 36 {
+		t.Fatalf("%+v", c.Product)
 	}
 }

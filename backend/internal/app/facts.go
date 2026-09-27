@@ -189,13 +189,23 @@ func (s *Service) Purchase(ctx context.Context, p domain.Purchase, key string) (
 	})
 	return p, err
 }
-func (s *Service) SetMembership(ctx context.Context, user, product string, m domain.Membership) error {
-	return s.Store.WithUser(ctx, user, func(tx Transaction) error {
+
+// SetMembership replaces the user's cart/list state for a product. A cart line defaults to
+// one unit; the auto-added marker survives only while the product stays in the cart.
+func (s *Service) SetMembership(ctx context.Context, user, product string, m domain.Membership) (domain.Membership, error) {
+	if m.CartQuantity < 0 || m.CartQuantity > domain.MaxCartQuantity || (!m.InCart && m.CartQuantity != 0) {
+		return m, invalid("cart_quantity must be 1-999 for cart items and 0 otherwise")
+	}
+	if m.InCart && m.CartQuantity == 0 {
+		m.CartQuantity = 1
+	}
+	err := s.Store.WithUser(ctx, user, func(tx Transaction) error {
 		f, err := tx.Facts(ctx)
 		if err != nil {
 			return err
 		}
 		old := f.Membership[product]
+		m.AutoAdded = m.InCart && old.InCart && old.AutoAdded
 		if err = tx.SaveMembership(ctx, product, m); err != nil {
 			return err
 		}
@@ -221,6 +231,31 @@ func (s *Service) SetMembership(ctx context.Context, user, product string, m dom
 		}
 		return nil
 	})
+	return m, err
+}
+
+// CartLine is one product in the user's cart or shopping list.
+type CartLine struct {
+	ProductID string `json:"product_id"`
+	domain.Membership
+}
+
+func (s *Service) Cart(ctx context.Context, user string) ([]CartLine, error) {
+	f, err := s.Store.Facts(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+	out := []CartLine{}
+	for id, m := range f.Membership {
+		if m.InCart || m.InList {
+			out = append(out, CartLine{ProductID: id, Membership: m})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ProductID < out[j].ProductID })
+	return out, nil
+}
+func (s *Service) Products(ctx context.Context, limit, offset int) ([]domain.Product, error) {
+	return s.Store.Products(ctx, limit, offset)
 }
 func (s *Service) Observe(ctx context.Context, user, product, kind string) error {
 	// Trusted flows own purchase, membership and feedback events.
