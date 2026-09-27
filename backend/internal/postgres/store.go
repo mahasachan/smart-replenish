@@ -80,6 +80,9 @@ func (s *Store) UpdateProduct(ctx context.Context, id string, p app.ProductPatch
  SET available=COALESCE($2,available),replenishable_score=COALESCE($3,replenishable_score)
  WHERE id=$1 RETURNING to_jsonb(p)`, id, p.Available, p.ReplenishableScore)
 }
+func (s *Store) Products(ctx context.Context, limit, offset int) ([]domain.Product, error) {
+	return queryJSON[domain.Product](ctx, s.Pool, "SELECT to_jsonb(p) FROM products p ORDER BY name,id LIMIT $1 OFFSET $2", limit, offset)
+}
 func (s *Store) WithUser(ctx context.Context, id string, fn func(app.Transaction) error) error {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {

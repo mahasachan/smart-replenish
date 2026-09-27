@@ -110,8 +110,17 @@ func (a API) Handler() http.Handler {
 		if err := decode(w, r, &m); err != nil {
 			return nil, err
 		}
-		err := a.Service.SetMembership(r.Context(), r.PathValue("userId"), r.PathValue("productId"), m)
-		return m, err
+		return a.Service.SetMembership(r.Context(), r.PathValue("userId"), r.PathValue("productId"), m)
+	})
+	handle("GET /users/{userId}/cart", 200, func(_ http.ResponseWriter, r *http.Request) (any, error) {
+		return a.Service.Cart(r.Context(), r.PathValue("userId"))
+	})
+	handle("GET /products", 200, func(_ http.ResponseWriter, r *http.Request) (any, error) {
+		limit, offset, err := page(r)
+		if err != nil {
+			return nil, err
+		}
+		return a.Service.Products(r.Context(), limit, offset)
 	})
 	handle("POST /users/{userId}/events", 201, func(w http.ResponseWriter, r *http.Request) (any, error) {
 		var e struct {
@@ -152,6 +161,18 @@ func (a API) Handler() http.Handler {
 			return a.Service.Feedback(r.Context(), r.PathValue("suggestionId"), verb)
 		})
 	}
+	handle("POST /suggestions/{suggestionId}/answer", 200, func(w http.ResponseWriter, r *http.Request) (any, error) {
+		var in struct {
+			RunningLow *bool `json:"running_low"`
+		}
+		if err := decode(w, r, &in); err != nil {
+			return nil, err
+		}
+		if in.RunningLow == nil {
+			return nil, domain.ErrInvalid
+		}
+		return a.Service.AnswerRunningLow(r.Context(), r.PathValue("suggestionId"), *in.RunningLow)
+	})
 	handle("GET /users/{userId}/decision-history", 200, func(_ http.ResponseWriter, r *http.Request) (any, error) {
 		limit, offset, err := page(r)
 		if err != nil {

@@ -46,6 +46,9 @@ func (PolicyEngine) Validate(r decision.DecisionResult, c decision.DecisionConte
 		if c.Product.PendingSuggestion {
 			return block(decision.Wait, "pending_suggestion")
 		}
+		if c.Product.RunningLowSnoozeHoursRemaining != nil && *c.Product.RunningLowSnoozeHoursRemaining > 0 {
+			return block(decision.Wait, "running_low_snoozed")
+		}
 	}
 	return Result{Allowed: true, Action: r.Action, Reason: "allowed"}
 }

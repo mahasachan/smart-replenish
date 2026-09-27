@@ -35,7 +35,8 @@ func (t *transaction) SavePurchase(ctx context.Context, p domain.Purchase, key, 
 	return nil
 }
 func (t *transaction) SaveMembership(ctx context.Context, product string, m domain.Membership) error {
-	_, err := t.q.Exec(ctx, `INSERT INTO user_product_state VALUES($1,$2,$3,$4) ON CONFLICT(user_id,product_id) DO UPDATE SET in_cart=EXCLUDED.in_cart,in_list=EXCLUDED.in_list`, t.user, product, m.InCart, m.InList)
+	_, err := t.q.Exec(ctx, `INSERT INTO user_product_state(user_id,product_id,in_cart,in_list,cart_quantity,auto_added) VALUES($1,$2,$3,$4,$5,$6)
+ ON CONFLICT(user_id,product_id) DO UPDATE SET in_cart=EXCLUDED.in_cart,in_list=EXCLUDED.in_list,cart_quantity=EXCLUDED.cart_quantity,auto_added=EXCLUDED.auto_added`, t.user, product, m.InCart, m.InList, m.CartQuantity, m.AutoAdded)
 	return err
 }
 func (t *transaction) SaveEvent(ctx context.Context, e domain.Event) error {

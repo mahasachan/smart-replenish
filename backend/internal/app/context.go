@@ -7,6 +7,31 @@ import (
 	"time"
 )
 
+// RunningLowSnooze is how long a "not yet" answer suppresses new running-low questions:
+// half the product's median repurchase interval, never less than one day.
+func RunningLowSnooze(medianRepurchaseDays float64) time.Duration {
+	return max(24*time.Hour, time.Duration(medianRepurchaseDays/2*24*float64(time.Hour)))
+}
+
+// deniedRunningLow returns, per product, the latest time the user answered "not yet".
+func deniedRunningLow(f Facts, now time.Time) map[string]time.Time {
+	asks := map[string]bool{}
+	for _, sg := range f.Suggestions {
+		if sg.Kind == string(decision.AskIfRunningLow) {
+			asks[sg.ID] = true
+		}
+	}
+	out := map[string]time.Time{}
+	for _, e := range f.Events {
+		if e.Type != "SUGGESTION_DISMISSED" || e.SuggestionID == nil || e.ProductID == nil || !asks[*e.SuggestionID] || e.CreatedAt.After(now) {
+			continue
+		}
+		if e.CreatedAt.After(out[*e.ProductID]) {
+			out[*e.ProductID] = e.CreatedAt
+		}
+	}
+	return out
+}
 func contexts(f Facts, now time.Time) []decision.DecisionContext {
 	loc, err := time.LoadLocation(f.User.Timezone)
 	if err != nil {
@@ -36,8 +61,12 @@ func contexts(f Facts, now time.Time) []decision.DecisionContext {
 				dismissed[*e.DecisionID] = true
 			}
 		}
+		// Decision-linked cart additions come from answering a question, not from browsing.
 		switch e.Type {
 		case "PRODUCT_VIEWED", "ADDED_TO_CART", "REMOVED_FROM_CART", "ADDED_TO_LIST":
+			if e.DecisionID != nil {
+				continue
+			}
 			if base.LastActivity == nil || e.CreatedAt.After(*base.LastActivity) {
 				t := e.CreatedAt
 				base.LastActivity = &t
@@ -64,6 +93,7 @@ func contexts(f Facts, now time.Time) []decision.DecisionContext {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	denied := deniedRunningLow(f, now)
 	out := make([]decision.DecisionContext, 0, len(ids))
 	for _, id := range ids {
 		in := base
@@ -85,6 +115,10 @@ func contexts(f Facts, now time.Time) []decision.DecisionContext {
 					}
 				}
 			}
+		}
+		if at, ok := denied[id]; ok && in.Prediction.Eligible {
+			until := at.Add(RunningLowSnooze(in.Prediction.MedianRepurchaseDays))
+			in.RunningLowSnoozedUntil = &until
 		}
 		out = append(out, decision.BuildContext(in, now))
 	}

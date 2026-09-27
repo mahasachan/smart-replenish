@@ -17,6 +17,7 @@ type ContextInput struct {
 	PurchaseDates                         []time.Time
 	Shown, Accepted, Dismissed            int
 	LastActivity                          *time.Time
+	RunningLowSnoozedUntil                *time.Time
 }
 
 func BuildContext(in ContextInput, now time.Time) DecisionContext {
@@ -33,6 +34,10 @@ func BuildContext(in ContextInput, now time.Time) DecisionContext {
 	}
 	c.User.LastSuggestionHoursAgo = hours(in.LastSuggestion)
 	c.Product.LastSuggestionHoursAgo = hours(in.LastProductSuggestion)
+	if in.RunningLowSnoozedUntil != nil && in.RunningLowSnoozedUntil.After(now) {
+		v := in.RunningLowSnoozedUntil.Sub(now).Hours()
+		c.Product.RunningLowSnoozeHoursRemaining = &v
+	}
 	if in.Shown > 0 {
 		a := float64(in.Accepted) / float64(in.Shown)
 		d := float64(in.Dismissed) / float64(in.Shown)
